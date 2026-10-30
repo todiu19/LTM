@@ -1,0 +1,24 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "1. Start MySQL Database",
+            "type": "shell",
+            "command": "./start-mysql.command",
+            "problemMatcher": []
+        },
+        {
+            "label": "2. Run Teacher App",
+            "type": "shell",
+            "command": "mvn javafx:run -Pteacher",
+            "problemMatcher": []
+        },
+        {
+            "label": "3. Run Student App",
+            "type": "shell",
+            "command": "mvn javafx:run -Pstudent",
+            "problemMatcher": []
+        }
+    ]
+}
+

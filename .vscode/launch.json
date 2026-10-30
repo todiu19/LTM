@@ -1,0 +1,20 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "java",
+            "name": "Run Teacher App",
+            "request": "launch",
+            "mainClass": "io.examwave.server.TeacherLauncher",
+            "projectName": "examwave-macos"
+        },
+        {
+            "type": "java",
+            "name": "Run Student App",
+            "request": "launch",
+            "mainClass": "io.examwave.student.StudentLauncher",
+            "projectName": "examwave-macos"
+        }
+    ]
+}
+
