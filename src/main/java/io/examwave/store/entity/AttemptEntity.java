@@ -20,6 +20,8 @@ public class AttemptEntity {
     private Double score;
     @Column(name = "correct_count") private Integer correctCount;
     @Column(name = "total_count") private Integer totalCount;
+    @Column(name = "violation_count", nullable = false) private int violationCount = 0;
+    @Column(name = "shuffle_data", length = 8000) private String shuffleData;
     @OneToMany(mappedBy = "attempt", cascade = CascadeType.ALL, orphanRemoval = true)
     private List<AnswerRecordEntity> answers = new ArrayList<>();
 
@@ -36,8 +38,15 @@ public class AttemptEntity {
     public Long getId() { return id; }
     public ExamRoundEntity getRound() { return round; }
     public StudentEntity getStudent() { return student; }
+    public long getJoinedAt() { return joinedAt; }
     public Long getSubmittedAt() { return submittedAt; }
     public double getScore() { return score == null ? 0 : score; }
     public int getCorrectCount() { return correctCount == null ? 0 : correctCount; }
     public int getTotalCount() { return totalCount == null ? 0 : totalCount; }
+    public int getViolationCount() { return violationCount; }
+    public void setViolationCount(int violationCount) { this.violationCount = violationCount; }
+    public void incrementViolation() { this.violationCount++; }
+    public String getShuffleData() { return shuffleData; }
+    public void setShuffleData(String shuffleData) { this.shuffleData = shuffleData; }
+    public List<AnswerRecordEntity> getAnswers() { return answers; }
 }

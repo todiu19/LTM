@@ -3,6 +3,7 @@
     <persistence-unit name="examwave-pu" transaction-type="RESOURCE_LOCAL">
         <provider>org.hibernate.jpa.HibernatePersistenceProvider</provider>
         <class>io.examwave.store.entity.TeacherEntity</class>
+        <class>io.examwave.store.entity.ClassEntity</class>
         <class>io.examwave.store.entity.StudentEntity</class>
         <class>io.examwave.store.entity.SubjectEntity</class>
         <class>io.examwave.store.entity.BankQuestionEntity</class>

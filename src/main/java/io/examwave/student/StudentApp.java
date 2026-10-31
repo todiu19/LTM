@@ -187,7 +187,10 @@ public final class StudentApp extends Application {
             offerText.setText("Chưa có ca thi đang mở. Trang sẽ tự cập nhật khi giảng viên mở đề.");
             join.setDisable(true);
         } else {
-            offerText.setText(offer.subjectName() + "  •  " + offer.title() + "\nHạn chung: " + format(offer.deadlineEpochMillis()));
+            String extra = "";
+            if (offer.targetClass() != null) extra += "  [Lớp: " + offer.targetClass() + "]";
+            if (offer.maxParticipants() != null) extra += "  [Tối đa: " + offer.maxParticipants() + " SV]";
+            offerText.setText(offer.subjectName() + "  •  " + offer.title() + extra + "\nHạn chung: " + format(offer.deadlineEpochMillis()));
             join.setText(offer.rejoin() ? "Làm lại từ đầu" : "Tham gia bài thi");
             join.setDisable(System.currentTimeMillis() >= offer.deadlineEpochMillis());
             join.setOnAction(event -> send("JOIN", offer.roundId()));

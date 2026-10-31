@@ -1,5 +1,6 @@
 package io.examwave.store;
 
+import io.examwave.common.CsvHelper;
 import io.examwave.common.Domain;
 import io.examwave.common.Domain.*;
 import io.examwave.common.Passwords;
@@ -7,11 +8,13 @@ import io.examwave.store.entity.*;
 import jakarta.persistence.*;
 
 import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
 public final class ExamStore implements AutoCloseable {
+    private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm");
     private final EntityManagerFactory factory;
     public record PendingAttempt(long teacherId, long roundId, String studentCode, long deadlineEpochMillis) {}
 
@@ -48,11 +51,15 @@ public final class ExamStore implements AutoCloseable {
     private void seedStudents() {
         tx(em -> {
             if (em.createQuery("select count(s) from StudentEntity s", Long.class).getSingleResult() > 0) return null;
-            em.persist(new StudentEntity("B21DCCN001", "Nguyễn Văn An", LocalDate.of(2003, 5, 12)));
-            em.persist(new StudentEntity("B21DCCN002", "Trần Minh Bình", LocalDate.of(2003, 8, 20)));
-            em.persist(new StudentEntity("B21DCCN003", "Lê Hoàng Cường", LocalDate.of(2003, 11, 3)));
-            for (int index = 4; index <= 103; index++)
-                em.persist(new StudentEntity("B21DCCN%03d".formatted(index), "Sinh viên %03d".formatted(index), LocalDate.of(2003, 12, 12)));
+            em.persist(new StudentEntity("B21DCCN001", "Nguyễn Văn An", LocalDate.of(2003, 5, 12), "D21CQCN01-B"));
+            em.persist(new StudentEntity("B21DCCN002", "Trần Minh Bình", LocalDate.of(2003, 8, 20), "D21CQCN01-B"));
+            em.persist(new StudentEntity("B21DCCN003", "Lê Hoàng Cường", LocalDate.of(2003, 11, 3), "D21CQCN01-B"));
+            for (int index = 4; index <= 50; index++) {
+                em.persist(new StudentEntity("B21DCCN%03d".formatted(index), "Sinh viên %03d".formatted(index), LocalDate.of(2003, 12, 12), "D21CQCN01-B"));
+            }
+            for (int index = 51; index <= 103; index++) {
+                em.persist(new StudentEntity("B21DCCN%03d".formatted(index), "Sinh viên %03d".formatted(index), LocalDate.of(2003, 12, 12), "D21CQCN02-B"));
+            }
             return null;
         });
     }
@@ -66,6 +73,9 @@ public final class ExamStore implements AutoCloseable {
             TeacherEntity teacher = new TeacherEntity("giangvien.demo", "Giảng viên Demo", Passwords.hash("examwave123"));
             em.persist(teacher);
             em.flush();
+
+            em.persist(new ClassEntity(teacher.getId(), "D21CQCN01-B", System.currentTimeMillis()));
+            em.persist(new ClassEntity(teacher.getId(), "D21CQCN02-B", System.currentTimeMillis()));
 
             SubjectEntity networking = new SubjectEntity(teacher.getId(), "Lập trình mạng", "lập trình mạng");
             SubjectEntity database = new SubjectEntity(teacher.getId(), "Cơ sở dữ liệu", "cơ sở dữ liệu");
@@ -148,9 +158,226 @@ public final class ExamStore implements AutoCloseable {
             StudentEntity entity = em.find(StudentEntity.class, normalized);
             if (entity == null || !entity.getBirthDate().equals(birth)) return Optional.empty();
             if (entity.isLocked()) throw new IllegalStateException("Tài khoản đã bị khóa: " + safe(entity.getLockReason()));
-            return Optional.of(new Student(entity.getCode(), entity.getFullName()));
+            return Optional.of(new Student(entity.getCode(), entity.getFullName(), entity.getClassName()));
         });
     }
+
+    // --- QUẢN LÝ LỚP HỌC ---
+
+    public List<StudentClassItem> listClasses(long teacherId) {
+        return read(em -> {
+            // Lấy các lớp đã được tạo cho teacher
+            List<ClassEntity> entities = em.createQuery("select c from ClassEntity c where c.teacherId=:teacher order by c.name", ClassEntity.class)
+                    .setParameter("teacher", teacherId).getResultList();
+            Set<String> classNames = new LinkedHashSet<>();
+            Map<String, Long> idsByName = new HashMap<>();
+            for (ClassEntity c : entities) {
+                classNames.add(c.getName());
+                idsByName.put(c.getName(), c.getId());
+            }
+
+            // Lấy thêm các lớp sinh viên đang có trong hệ thống nếu chưa có trong bảng
+            List<String> studentClasses = em.createQuery("select distinct s.className from StudentEntity s where s.className is not null", String.class).getResultList();
+            for (String sc : studentClasses) {
+                if (sc != null && !sc.isBlank() && !classNames.contains(sc)) {
+                    classNames.add(sc);
+                }
+            }
+
+            List<StudentClassItem> items = new ArrayList<>();
+            for (String name : classNames) {
+                long count = em.createQuery("select count(s) from StudentEntity s where s.className=:name", Long.class)
+                        .setParameter("name", name).getSingleResult();
+                long id = idsByName.getOrDefault(name, 0L);
+                items.add(new StudentClassItem(id, name, count));
+            }
+            return items;
+        });
+    }
+
+    public long createClass(long teacherId, String rawName) {
+        String name = rawName == null ? "" : rawName.strip().replaceAll("\\s+", " ");
+        if (name.isBlank() || name.length() > 50) throw new IllegalArgumentException("Tên lớp phải có từ 1 đến 50 ký tự.");
+        return tx(em -> {
+            List<ClassEntity> exists = em.createQuery("select c from ClassEntity c where c.teacherId=:teacher and lower(c.name)=lower(:name)", ClassEntity.class)
+                    .setParameter("teacher", teacherId).setParameter("name", name).getResultList();
+            if (!exists.isEmpty()) return exists.get(0).getId();
+            ClassEntity entity = new ClassEntity(teacherId, name, System.currentTimeMillis());
+            em.persist(entity);
+            em.flush();
+            return entity.getId();
+        });
+    }
+
+    public void deleteClass(long teacherId, long classId) {
+        tx(em -> {
+            ClassEntity entity = em.find(ClassEntity.class, classId);
+            if (entity != null && entity.getTeacherId() == teacherId) {
+                String className = entity.getName();
+                em.createQuery("update StudentEntity s set s.className='Chưa phân lớp' where s.className=:name")
+                        .setParameter("name", className).executeUpdate();
+                em.remove(entity);
+            }
+            return null;
+        });
+    }
+
+    // --- QUẢN LÝ SINH VIÊN & CSV IMPORT ---
+
+    public List<StudentView> listStudents(String className) {
+        return read(em -> {
+            String jpql = "select s from StudentEntity s";
+            boolean filter = className != null && !className.isBlank() && !"Tất cả".equalsIgnoreCase(className.strip());
+            if (filter) jpql += " where s.className=:className";
+            jpql += " order by s.code asc";
+
+            TypedQuery<StudentEntity> query = em.createQuery(jpql, StudentEntity.class);
+            if (filter) query.setParameter("className", className.strip());
+            return query.getResultList().stream().map(s -> new StudentView(
+                    s.getCode(),
+                    s.getFullName(),
+                    s.getBirthDate().format(DateTimeFormatter.ofPattern("dd/MM/yyyy")),
+                    s.getClassName(),
+                    s.isLocked(),
+                    safe(s.getLockReason())
+            )).toList();
+        });
+    }
+
+    public void saveStudent(String code, String fullName, LocalDate birthDate, String className) {
+        String normCode = normalizeCode(code);
+        if (normCode.isBlank() || normCode.length() > 30) throw new IllegalArgumentException("Mã sinh viên không hợp lệ.");
+        if (fullName == null || fullName.isBlank() || fullName.strip().length() > 120) throw new IllegalArgumentException("Họ tên sinh viên không hợp lệ.");
+        if (birthDate == null) throw new IllegalArgumentException("Ngày sinh không được để trống.");
+        String normClass = className == null || className.isBlank() ? "Chưa phân lớp" : className.strip();
+
+        tx(em -> {
+            StudentEntity student = em.find(StudentEntity.class, normCode);
+            if (student == null) {
+                em.persist(new StudentEntity(normCode, fullName.strip(), birthDate, normClass));
+            } else {
+                student.setFullName(fullName.strip());
+                student.setBirthDate(birthDate);
+                student.setClassName(normClass);
+            }
+            return null;
+        });
+    }
+
+    public StudentImportSummary importStudentsFromCsv(long teacherId, String csvContent, String defaultClassName) {
+        if (csvContent == null || csvContent.isBlank()) {
+            throw new IllegalArgumentException("Nội dung file CSV trống.");
+        }
+
+        List<List<String>> parsedRows = CsvHelper.parseCsv(csvContent);
+        if (parsedRows.isEmpty()) {
+            throw new IllegalArgumentException("Không tìm thấy dòng dữ liệu nào trong file CSV.");
+        }
+
+        int inserted = 0;
+        int updated = 0;
+        int processed = 0;
+        List<String> errors = new ArrayList<>();
+        Set<String> newClassesToCreate = new HashSet<>();
+
+        for (int i = 0; i < parsedRows.size(); i++) {
+            List<String> row = parsedRows.get(i);
+            if (row.isEmpty()) continue;
+
+            // Kiểm tra nếu là dòng header
+            String firstCell = row.get(0).toLowerCase(Locale.ROOT);
+            if (firstCell.contains("mã") || firstCell.contains("code") || firstCell.contains("mssv") || firstCell.contains("stt")) {
+                continue;
+            }
+
+            processed++;
+            int rowNumber = i + 1;
+            try {
+                String code;
+                String name;
+                String birthStr;
+                String studentClass = defaultClassName;
+
+                if (row.size() >= 5 && isInteger(row.get(0))) {
+                    // Cấu trúc 5 cột: STT, Mã SV, Họ tên, Ngày sinh, Lớp
+                    code = row.get(1);
+                    name = row.get(2);
+                    birthStr = row.get(3);
+                    if (row.size() > 4 && !row.get(4).isBlank()) studentClass = row.get(4);
+                } else if (row.size() >= 4) {
+                    // Cấu trúc 4 cột: Mã SV, Họ tên, Ngày sinh, Lớp
+                    code = row.get(0);
+                    name = row.get(1);
+                    birthStr = row.get(2);
+                    if (!row.get(3).isBlank()) studentClass = row.get(3);
+                } else if (row.size() == 3) {
+                    // Cấu trúc 3 cột: Mã SV, Họ tên, Ngày sinh (lấy lớp mặc định)
+                    code = row.get(0);
+                    name = row.get(1);
+                    birthStr = row.get(2);
+                } else {
+                    errors.add("Dòng " + rowNumber + ": Thiếu cột dữ liệu (cần ít nhất Mã SV, Họ tên, Ngày sinh).");
+                    continue;
+                }
+
+                String normCode = normalizeCode(code);
+                if (normCode.isBlank()) {
+                    errors.add("Dòng " + rowNumber + ": Mã sinh viên trống.");
+                    continue;
+                }
+                if (name == null || name.isBlank()) {
+                    errors.add("Dòng " + rowNumber + ": Họ tên trống.");
+                    continue;
+                }
+
+                LocalDate birthDate = CsvHelper.parseDate(birthStr);
+                String finalClass = studentClass == null || studentClass.isBlank() ? "Chưa phân lớp" : studentClass.strip();
+
+                boolean isNew = tx(em -> {
+                    StudentEntity student = em.find(StudentEntity.class, normCode);
+                    if (student == null) {
+                        em.persist(new StudentEntity(normCode, name.strip(), birthDate, finalClass));
+                        return true;
+                    } else {
+                        student.setFullName(name.strip());
+                        student.setBirthDate(birthDate);
+                        student.setClassName(finalClass);
+                        return false;
+                    }
+                });
+
+                if (isNew) inserted++;
+                else updated++;
+
+                if (!"Chưa phân lớp".equalsIgnoreCase(finalClass)) {
+                    newClassesToCreate.add(finalClass);
+                }
+            } catch (Exception ex) {
+                errors.add("Dòng " + rowNumber + ": " + ex.getMessage());
+            }
+        }
+
+        // Tự động tạo các lớp mới nếu chưa có
+        for (String cName : newClassesToCreate) {
+            try {
+                createClass(teacherId, cName);
+            } catch (Exception ignored) {}
+        }
+
+        return new StudentImportSummary(processed, inserted, updated, errors);
+    }
+
+    private static boolean isInteger(String str) {
+        if (str == null || str.isBlank()) return false;
+        try {
+            Integer.parseInt(str.strip());
+            return true;
+        } catch (NumberFormatException e) {
+            return false;
+        }
+    }
+
+    // --- MÔN HỌC & CÂU HỎI ---
 
     public long createSubject(long teacherId, String rawName) {
         String name = rawName == null ? "" : rawName.strip().replaceAll("\\s+", " ");
@@ -219,19 +446,125 @@ public final class ExamStore implements AutoCloseable {
                 .map(t -> new TemplateItem(t.getId(), t.getTitle(), t.getSubject().getName(), t.getDurationMinutes(), t.getQuestions().size())).toList());
     }
 
+    // --- QUẢN LÝ CA THI & CHIA CA THI ---
+
     public RoundInfo openTemplate(long teacherId, long templateId, long now) {
+        return openRound(teacherId, templateId, null, null, null, null, -1, now);
+    }
+
+    public RoundInfo openRound(long teacherId, OpenRoundDraft draft, long now) {
+        return openRound(teacherId, draft.templateId(), draft.title(), draft.targetClass(),
+                draft.maxParticipants(), null, draft.durationMinutes(), now);
+    }
+
+    public RoundInfo openRound(long teacherId, long templateId, String customTitle,
+                              String targetClass, Integer maxParticipants, String assignedStudents,
+                              int customDurationMinutes, long now) {
         return tx(em -> {
-            List<ExamRoundEntity> active = em.createQuery("select r from ExamRoundEntity r where r.teacherId=:teacher and r.active=true", ExamRoundEntity.class)
-                    .setParameter("teacher", teacherId).setLockMode(LockModeType.PESSIMISTIC_WRITE).getResultList();
-            for (ExamRoundEntity round : active) { if (round.getDeadlineAt() > now) throw new IllegalStateException("Một ca thi khác vẫn đang diễn ra."); round.close(); }
             ExamTemplateEntity template = em.createQuery("select distinct t from ExamTemplateEntity t join fetch t.subject left join fetch t.questions x left join fetch x.question where t.id=:id and t.teacherId=:teacher", ExamTemplateEntity.class)
                     .setParameter("id", templateId).setParameter("teacher", teacherId).getResultStream().findFirst()
                     .orElseThrow(() -> new IllegalArgumentException("Không tìm thấy đề thi."));
             if (template.getQuestions().isEmpty()) throw new IllegalStateException("Đề thi không có câu hỏi.");
-            long deadline = now + template.getDurationMinutes() * 60_000L;
-            ExamRoundEntity round = new ExamRoundEntity(teacherId, template, now, deadline);
-            for (TemplateQuestionEntity link : template.getQuestions()) round.addSnapshot(link.getQuestion(), link.getPosition());
-            em.persist(round); em.flush(); return roundInfo(round);
+
+            int duration = customDurationMinutes > 0 ? customDurationMinutes : template.getDurationMinutes();
+            long deadline = now + duration * 60_000L;
+
+            ExamRoundEntity round = new ExamRoundEntity(teacherId, template, customTitle, targetClass, maxParticipants, assignedStudents, now, deadline);
+            for (TemplateQuestionEntity link : template.getQuestions()) {
+                round.addSnapshot(link.getQuestion(), link.getPosition());
+            }
+            em.persist(round);
+            em.flush();
+            return roundInfo(round);
+        });
+    }
+
+    /**
+     * Tự động chia sinh viên của lớp thành nhiều ca thi dựa trên số lượng người / ca thi.
+     */
+    public List<RoundSummary> splitExamRounds(long teacherId, SplitSessionDraft draft, long now) {
+        if (draft.studentsPerRound() <= 0) throw new IllegalArgumentException("Số lượng người / ca thi phải lớn hơn 0.");
+
+        return tx(em -> {
+            ExamTemplateEntity template = em.createQuery("select distinct t from ExamTemplateEntity t join fetch t.subject left join fetch t.questions x left join fetch x.question where t.id=:id and t.teacherId=:teacher", ExamTemplateEntity.class)
+                    .setParameter("id", draft.templateId()).setParameter("teacher", teacherId).getResultStream().findFirst()
+                    .orElseThrow(() -> new IllegalArgumentException("Không tìm thấy đề thi."));
+            if (template.getQuestions().isEmpty()) throw new IllegalStateException("Đề thi không có câu hỏi.");
+
+            String targetClass = draft.targetClass() == null || draft.targetClass().isBlank() || "Tất cả".equalsIgnoreCase(draft.targetClass().strip()) ? null : draft.targetClass().strip();
+            String studentJpql = "select s.code from StudentEntity s" + (targetClass != null ? " where s.className=:className" : "") + " order by s.code asc";
+            TypedQuery<String> query = em.createQuery(studentJpql, String.class);
+            if (targetClass != null) query.setParameter("className", targetClass);
+            List<String> studentCodes = query.getResultList();
+
+            if (studentCodes.isEmpty()) {
+                throw new IllegalStateException("Không tìm thấy sinh viên nào thuộc lớp: " + (targetClass != null ? targetClass : "Tất cả"));
+            }
+
+            int perRound = draft.studentsPerRound();
+            int totalStudents = studentCodes.size();
+            int numRounds = (int) Math.ceil((double) totalStudents / perRound);
+            int duration = draft.durationMinutes() > 0 ? draft.durationMinutes() : template.getDurationMinutes();
+            long deadline = now + duration * 60_000L;
+
+            List<RoundSummary> created = new ArrayList<>();
+            for (int i = 0; i < numRounds; i++) {
+                int fromIndex = i * perRound;
+                int toIndex = Math.min(fromIndex + perRound, totalStudents);
+                List<String> sub = studentCodes.subList(fromIndex, toIndex);
+                String assigned = String.join(",", sub);
+
+                String roundTitle = template.getTitle() + " - Ca " + (i + 1) + (targetClass != null ? " (" + targetClass + ")" : "");
+                ExamRoundEntity round = new ExamRoundEntity(teacherId, template, roundTitle, targetClass, perRound, assigned, now, deadline);
+                // Ca đầu tiên kích hoạt, các ca sau cũng kích hoạt hoặc chờ giảng viên mở
+                round.setActive(true);
+
+                for (TemplateQuestionEntity link : template.getQuestions()) {
+                    round.addSnapshot(link.getQuestion(), link.getPosition());
+                }
+                em.persist(round);
+                em.flush();
+                created.add(new RoundSummary(round.getId(), round.getTitle(), round.getSubjectName(), round.getTargetClass(),
+                        round.getMaxParticipants(), 0, round.getOpenedAt(), round.getDeadlineAt(), round.isActive()));
+            }
+            return created;
+        });
+    }
+
+    public List<RoundSummary> listRounds(long teacherId) {
+        return read(em -> {
+            List<ExamRoundEntity> rounds = em.createQuery("select r from ExamRoundEntity r where r.teacherId=:teacher order by r.id desc", ExamRoundEntity.class)
+                    .setParameter("teacher", teacherId).getResultList();
+            List<RoundSummary> list = new ArrayList<>();
+            for (ExamRoundEntity r : rounds) {
+                long count = em.createQuery("select count(a) from AttemptEntity a where a.round.id=:roundId", Long.class)
+                        .setParameter("roundId", r.getId()).getSingleResult();
+                list.add(new RoundSummary(r.getId(), r.getTitle(), r.getSubjectName(), r.getTargetClass(),
+                        r.getMaxParticipants(), count, r.getOpenedAt(), r.getDeadlineAt(), r.isActive()));
+            }
+            return list;
+        });
+    }
+
+    public void activateRound(long teacherId, long roundId, int durationMinutes, long now) {
+        tx(em -> {
+            ExamRoundEntity round = em.find(ExamRoundEntity.class, roundId, LockModeType.PESSIMISTIC_WRITE);
+            if (round == null || round.getTeacherId() != teacherId) throw new IllegalArgumentException("Không tìm thấy ca thi.");
+            int duration = durationMinutes > 0 ? durationMinutes : (int) ((round.getDeadlineAt() - round.getOpenedAt()) / 60_000L);
+            if (duration <= 0) duration = 45;
+            round.setActive(true);
+            round.setDeadlineAt(now + duration * 60_000L);
+            return null;
+        });
+    }
+
+    public void closeRound(long teacherId, long roundId) {
+        tx(em -> {
+            ExamRoundEntity round = em.find(ExamRoundEntity.class, roundId, LockModeType.PESSIMISTIC_WRITE);
+            if (round != null && round.getTeacherId() == teacherId) {
+                round.close();
+            }
+            return null;
         });
     }
 
@@ -240,31 +573,118 @@ public final class ExamStore implements AutoCloseable {
                 .setParameter("teacher", teacherId).setParameter("now", now).setMaxResults(1).getResultStream().findFirst().map(ExamStore::roundInfo));
     }
 
+    /**
+     * Tìm ca thi đang mở phù hợp cho một sinh viên cụ thể:
+     * - Xét theo ca có gán mã SV trực tiếp
+     * - Xét theo lớp của sinh viên
+     * - Xét giới hạn số lượng người / ca
+     */
+    public Optional<ExamRoundEntity> activeRoundForStudent(EntityManager em, long teacherId, String studentCode, long now) {
+        StudentEntity student = em.find(StudentEntity.class, normalizeCode(studentCode));
+        if (student == null) return Optional.empty();
+
+        List<ExamRoundEntity> activeRounds = em.createQuery("select r from ExamRoundEntity r where r.teacherId=:teacher and r.active=true and r.deadlineAt>:now order by r.id desc", ExamRoundEntity.class)
+                .setParameter("teacher", teacherId).setParameter("now", now).getResultList();
+
+        for (ExamRoundEntity r : activeRounds) {
+            // 1. Kiểm tra danh sách gán mã sinh viên cụ thể nếu có
+            if (r.getAssignedStudents() != null && !r.getAssignedStudents().isBlank()) {
+                List<String> assignedList = Arrays.stream(r.getAssignedStudents().split(","))
+                        .map(String::trim).map(String::toUpperCase).toList();
+                if (assignedList.contains(normalizeCode(studentCode))) {
+                    return Optional.of(r);
+                }
+                continue; // Nếu ca này có danh sách chỉ định riêng mà SV không có trong đó thì bỏ qua
+            }
+
+            // 2. Kiểm tra lớp học nếu có
+            if (r.getTargetClass() != null && !r.getTargetClass().isBlank()) {
+                if (!r.getTargetClass().equalsIgnoreCase(student.getClassName())) {
+                    continue; // Khác lớp -> bỏ qua
+                }
+            }
+
+            // 3. Kiểm tra số lượng người / ca thi
+            if (r.getMaxParticipants() != null && r.getMaxParticipants() > 0) {
+                long currentAttempts = em.createQuery("select count(a) from AttemptEntity a where a.round.id=:roundId", Long.class)
+                        .setParameter("roundId", r.getId()).getSingleResult();
+                boolean alreadyJoined = !em.createQuery("select a.id from AttemptEntity a where a.round.id=:roundId and a.student.code=:code", Long.class)
+                        .setParameter("roundId", r.getId()).setParameter("code", normalizeCode(studentCode)).getResultList().isEmpty();
+                if (!alreadyJoined && currentAttempts >= r.getMaxParticipants()) {
+                    continue; // Ca đã đủ số người -> bỏ qua tìm ca khác
+                }
+            }
+
+            return Optional.of(r);
+        }
+
+        return Optional.empty();
+    }
+
     public Optional<ExamOffer> offer(long teacherId, String studentCode, long now) {
-        Optional<RoundInfo> active = activeRound(teacherId, now);
-        if (active.isEmpty()) return Optional.empty();
         return read(em -> {
-            RoundInfo round = active.get();
-            Optional<AttemptEntity> attempt = findAttempt(em, round.id(), studentCode, null);
+            Optional<ExamRoundEntity> active = activeRoundForStudent(em, teacherId, studentCode, now);
+            if (active.isEmpty()) return Optional.empty();
+
+            ExamRoundEntity round = active.get();
+            Optional<AttemptEntity> attempt = findAttempt(em, round.getId(), studentCode, null);
             if (attempt.isPresent() && attempt.get().getSubmittedAt() != null) return Optional.empty();
-            return Optional.of(new ExamOffer(round.id(), round.title(), round.subjectName(), round.deadlineEpochMillis(), attempt.isPresent()));
+            return Optional.of(new ExamOffer(
+                    round.getId(),
+                    round.getTitle(),
+                    round.getSubjectName(),
+                    round.getTargetClass(),
+                    round.getMaxParticipants(),
+                    round.getDeadlineAt(),
+                    attempt.isPresent()
+            ));
         });
     }
 
     public ExamPaper joinRound(long teacherId, String studentCode, long roundId, long now) {
         return tx(em -> {
             ExamRoundEntity round = requireRound(em, teacherId, roundId, LockModeType.PESSIMISTIC_READ);
-            if (now >= round.getDeadlineAt()) throw new IllegalStateException("Ca thi đã hết giờ.");
+            if (!round.isActive() || now >= round.getDeadlineAt()) throw new IllegalStateException("Ca thi đã hết giờ hoặc đã đóng.");
+
             StudentEntity student = requireStudent(em, studentCode);
+
+            // Kiểm tra danh sách chỉ định
+            if (round.getAssignedStudents() != null && !round.getAssignedStudents().isBlank()) {
+                List<String> assignedList = Arrays.stream(round.getAssignedStudents().split(","))
+                        .map(String::trim).map(String::toUpperCase).toList();
+                if (!assignedList.contains(normalizeCode(studentCode))) {
+                    throw new IllegalStateException("Bạn không nằm trong danh sách của ca thi này.");
+                }
+            }
+
+            // Kiểm tra lớp áp dụng
+            if (round.getTargetClass() != null && !round.getTargetClass().isBlank()) {
+                if (!round.getTargetClass().equalsIgnoreCase(student.getClassName())) {
+                    throw new IllegalStateException("Ca thi này dành riêng cho lớp: " + round.getTargetClass());
+                }
+            }
+
             Optional<AttemptEntity> existing = findAttempt(em, roundId, studentCode, LockModeType.PESSIMISTIC_WRITE);
             if (existing.isPresent() && existing.get().getSubmittedAt() != null) throw new IllegalStateException("Bạn đã hoàn thành ca thi này.");
-            if (existing.isEmpty()) em.persist(new AttemptEntity(round, student, now));
+
+            // Kiểm tra số lượng người / ca
+            if (existing.isEmpty() && round.getMaxParticipants() != null && round.getMaxParticipants() > 0) {
+                long currentCount = em.createQuery("select count(a) from AttemptEntity a where a.round.id=:roundId", Long.class)
+                        .setParameter("roundId", round.getId()).getSingleResult();
+                if (currentCount >= round.getMaxParticipants()) {
+                    throw new IllegalStateException("Ca thi đã đủ số lượng sinh viên (" + round.getMaxParticipants() + " người). Vui lòng đợi ca sau.");
+                }
+            }
+
+            if (existing.isEmpty()) {
+                em.persist(new AttemptEntity(round, student, now));
+            }
             return paper(round);
         });
     }
 
     public boolean roundAccepts(long teacherId, long roundId, long now) {
-        return read(em -> em.createQuery("select count(r) from ExamRoundEntity r where r.id=:id and r.teacherId=:teacher and r.deadlineAt>:now", Long.class)
+        return read(em -> em.createQuery("select count(r) from ExamRoundEntity r where r.id=:id and r.teacherId=:teacher and r.active=true and r.deadlineAt>:now", Long.class)
                 .setParameter("id", roundId).setParameter("teacher", teacherId).setParameter("now", now).getSingleResult() == 1);
     }
 
@@ -296,7 +716,12 @@ public final class ExamStore implements AutoCloseable {
                 .setParameter("now", now).getResultList().stream().map(a -> new PendingAttempt(a.getRound().getTeacherId(), a.getRound().getId(), a.getStudent().getCode(), a.getRound().getDeadlineAt())).toList());
     }
 
-    public void closeExpiredRounds(long now) { tx(em -> { em.createQuery("update ExamRoundEntity r set r.active=false where r.deadlineAt<=:now").setParameter("now", now).executeUpdate(); return null; }); }
+    public void closeExpiredRounds(long now) {
+        tx(em -> {
+            em.createQuery("update ExamRoundEntity r set r.active=false where r.deadlineAt<=:now and r.active=true").setParameter("now", now).executeUpdate();
+            return null;
+        });
+    }
 
     public List<HistoryItem> history(long teacherId, String studentCode) {
         return read(em -> em.createQuery("select a from AttemptEntity a join fetch a.round where a.round.teacherId=:teacher and a.student.code=:code and a.submittedAt is not null order by a.submittedAt desc", AttemptEntity.class)
@@ -305,9 +730,49 @@ public final class ExamStore implements AutoCloseable {
     }
 
     public List<ResultView> results(long teacherId) {
-        return read(em -> em.createQuery("select a from AttemptEntity a join fetch a.round join fetch a.student where a.round.teacherId=:teacher and a.submittedAt is not null order by a.submittedAt desc", AttemptEntity.class)
-                .setParameter("teacher", teacherId).getResultList().stream().map(a -> new ResultView(a.getRound().getId(), a.getRound().getTitle(), a.getStudent().getCode(), a.getStudent().getFullName(), a.getScore(), a.getCorrectCount(), a.getTotalCount(), a.getSubmittedAt())).toList());
+        return results(teacherId, null, null);
     }
+
+    public List<ResultView> results(long teacherId, Long roundId, String className) {
+        return read(em -> {
+            String normalizedClass = className == null ? null : className.strip();
+            boolean filterByClass = normalizedClass != null
+                    && !normalizedClass.isBlank()
+                    && !"Tất cả".equalsIgnoreCase(normalizedClass)
+                    && !"Tất cả lớp".equalsIgnoreCase(normalizedClass);
+            StringBuilder jpql = new StringBuilder("select a from AttemptEntity a join fetch a.round join fetch a.student where a.round.teacherId=:teacher and a.submittedAt is not null");
+            if (roundId != null && roundId > 0) {
+                jpql.append(" and a.round.id=:roundId");
+            }
+            if (filterByClass) {
+                jpql.append(" and a.student.className=:className");
+            }
+            jpql.append(" order by a.submittedAt desc");
+
+            TypedQuery<AttemptEntity> query = em.createQuery(jpql.toString(), AttemptEntity.class)
+                    .setParameter("teacher", teacherId);
+            if (roundId != null && roundId > 0) {
+                query.setParameter("roundId", roundId);
+            }
+            if (filterByClass) {
+                query.setParameter("className", normalizedClass);
+            }
+
+            return query.getResultList().stream().map(a -> new ResultView(
+                    a.getRound().getId(),
+                    a.getRound().getTitle(),
+                    a.getStudent().getCode(),
+                    a.getStudent().getFullName(),
+                    a.getStudent().getClassName(),
+                    a.getScore(),
+                    a.getCorrectCount(),
+                    a.getTotalCount(),
+                    a.getSubmittedAt()
+            )).toList();
+        });
+    }
+
+    // --- BÀI TẬP ---
 
     public long createAssignment(long teacherId, AssignmentDraft draft, long now) {
         validateAssignmentDraft(draft, now);
@@ -378,7 +843,9 @@ public final class ExamStore implements AutoCloseable {
 
     private static Teacher teacher(TeacherEntity entity) { return new Teacher(entity.getId(), entity.getUsername(), entity.getFullName()); }
     private static BankQuestion bankQuestion(BankQuestionEntity q) { return new BankQuestion(q.getId(), q.getSubject().getId(), q.getSubject().getName(), q.getDifficulty(), q.getPrompt(), q.getOptionA(), q.getOptionB(), q.getOptionC(), q.getOptionD(), q.getCorrectOption()); }
-    private static RoundInfo roundInfo(ExamRoundEntity r) { return new RoundInfo(r.getId(), r.getTeacherId(), r.getTitle(), r.getSubjectName(), r.getOpenedAt(), r.getDeadlineAt()); }
+    private static RoundInfo roundInfo(ExamRoundEntity r) {
+        return new RoundInfo(r.getId(), r.getTeacherId(), r.getTitle(), r.getSubjectName(), r.getTargetClass(), r.getMaxParticipants(), r.getOpenedAt(), r.getDeadlineAt());
+    }
     private static ExamPaper paper(ExamRoundEntity round) { return new ExamPaper(round.getId(), round.getTitle(), round.getSubjectName(), round.getDeadlineAt(), round.getQuestions().stream().map(q -> new PublicQuestion(q.getId(), q.getPrompt(), List.of(q.getOptionA(), q.getOptionB(), q.getOptionC(), q.getOptionD()))).toList()); }
     private static Grade grade(AttemptEntity a, String message) { return new Grade(a.getRound().getId(), a.getScore(), a.getCorrectCount(), a.getTotalCount(), message); }
     private static SubmissionView submission(AssignmentSubmissionEntity s) { return new SubmissionView(s.getId(), s.getStudent().getCode(), s.getStudent().getFullName(), s.getContent(), s.getFileName(), bytes(s.getFileData()), s.getSubmittedAt()); }

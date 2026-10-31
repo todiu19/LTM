@@ -82,13 +82,30 @@ public final class ExamCoordinator implements AutoCloseable {
         if (!running) throw new IllegalStateException("Hãy khởi động Server trước.");
         RoundInfo round = store.openTemplate(teacher.id(), templateId, System.currentTimeMillis());
         announcedRound = round.id();
+        notifyRoundsChanged();
+        return round;
+    }
+
+    public RoundInfo openRound(OpenRoundDraft draft) {
+        if (!running) throw new IllegalStateException("Hãy khởi động Server trước.");
+        RoundInfo round = store.openRound(teacher.id(), draft, System.currentTimeMillis());
+        announcedRound = round.id();
+        notifyRoundsChanged();
+        return round;
+    }
+
+    public List<RoundSummary> splitExamRounds(SplitSessionDraft draft) {
+        if (!running) throw new IllegalStateException("Hãy khởi động Server trước.");
+        List<RoundSummary> created = store.splitExamRounds(teacher.id(), draft, System.currentTimeMillis());
+        notifyRoundsChanged();
+        return created;
+    }
+
+    public void notifyRoundsChanged() {
         for (Peer peer : students.values()) {
-            peer.status = "ONLINE";
-            peer.activity = "Sẵn sàng";
             peer.sendOffer();
         }
         changed();
-        return round;
     }
 
     public void warn(String studentCode, String message) {
@@ -252,13 +269,17 @@ public final class ExamCoordinator implements AutoCloseable {
         }
 
         private void join(long roundId, long receivedAt) {
-            ExamPaper paper = store.joinRound(teacher.id(), student.code(), roundId, receivedAt);
-            currentRound = roundId;
-            liveAnswers.put(new AttemptKey(roundId, student.code()), Map.of());
-            status = "DOING_EXAM";
-            activity = paper.title();
-            send(Wire.packet("PAPER", paper));
-            changed();
+            try {
+                ExamPaper paper = store.joinRound(teacher.id(), student.code(), roundId, receivedAt);
+                currentRound = roundId;
+                liveAnswers.put(new AttemptKey(roundId, student.code()), Map.of());
+                status = "DOING_EXAM";
+                activity = paper.title();
+                send(Wire.packet("PAPER", paper));
+                changed();
+            } catch (Exception failure) {
+                send(Wire.packet("ERROR", failure.getMessage() == null ? "Không thể vào ca thi." : failure.getMessage()));
+            }
         }
 
         private void updateAnswers(AnswerBundle bundle, long receivedAt) {

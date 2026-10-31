@@ -24,12 +24,14 @@ Xem thêm [kiến trúc](docs/ARCHITECTURE.md) và [giao thức](docs/PROTOCOL.m
 
 - Tạo/đăng nhập tài khoản, đổi mật khẩu.
 - Dữ liệu môn, câu hỏi, đề, ca thi và bài tập tách theo giảng viên.
+- Quản lý Lớp học và Sinh viên; nhập danh sách sinh viên hàng loạt từ file CSV (hỗ trợ nhiều định dạng ngày sinh, tự động nhận diện lớp).
 - Ngân hàng câu hỏi trắc nghiệm theo môn và độ khó 1–6.
-- Tạo đề từ nhiều câu hỏi, mở ca thi với hạn chung.
+- Tạo đề thi từ ngân hàng câu hỏi.
+- **Chia ca thi & Giới hạn sĩ số**: Mở ca thi theo lớp cụ thể hoặc tất cả, đặt giới hạn số lượng sinh viên tối đa / ca thi, chia ca thi tự động theo số người / ca.
 - Theo dõi sinh viên online và trạng thái `ONLINE`, `DOING_EXAM`, `SUBMITTED`.
 - Gửi cảnh báo, khóa và mở khóa tài khoản sinh viên.
 - Chấm bài thủ công khi nộp và tự chấm khi hết giờ.
-- Xem lịch sử kết quả.
+- Xem lịch sử kết quả thi theo từng ca và từng lớp; **xuất kết quả làm bài ra file CSV** chuẩn UTF-8 BOM xem tiếng Việt trên Excel.
 - Giao bài tập có hạn nộp/tệp đính kèm; xem và tải bài nộp.
 
 ### Sinh viên

@@ -17,7 +17,12 @@ public class AnswerRecordEntity {
     @Column(nullable = false) private boolean correct;
 
     protected AnswerRecordEntity() {}
-    AnswerRecordEntity(AttemptEntity attempt, RoundQuestionEntity question, String answer, boolean correct) {
+    public AnswerRecordEntity(AttemptEntity attempt, RoundQuestionEntity question, String answer, boolean correct) {
         this.attempt = attempt; this.question = question; this.answer = answer; this.correct = correct;
     }
+    public Long getId() { return id; }
+    public AttemptEntity getAttempt() { return attempt; }
+    public RoundQuestionEntity getQuestion() { return question; }
+    public String getAnswer() { return answer; }
+    public boolean isCorrect() { return correct; }
 }
